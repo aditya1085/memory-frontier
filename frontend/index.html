@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Memory Frontier — KV Cache vs. Synaptic Memory</title>
+<meta name="description" content="An interactive explainer on bounded-memory trade-offs in sequence models, connected to Pathway's Dragon Hatchling (BDH) architecture." />
+<link rel="stylesheet" href="assets/style.css" />
+<script>
+  // Empty string = same origin. The FastAPI backend serves this frontend directly,
+  // so on Railway this works with no changes. Only set a full URL here if you
+  // deploy the frontend separately from the backend (e.g. on Vercel).
+  window.MEMORY_FRONTIER_API = "";
+</script>
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="wrap">
+    <a class="brand" href="#top">memory<span>·</span>frontier</a>
+    <div class="navlinks">
+      <a href="#playground">Playground</a>
+      <a href="#recall">Recall Lab</a>
+      <a href="#forgetting">Forgetting Lab</a>
+      <a href="#bdh">BDH Module</a>
+      <a href="#demo">Judge Demo</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div>
+      <div class="eyebrow">DataForge 2026 — Pathway Track</div>
+      <h1>Can a fixed-size memory remember a growing conversation?</h1>
+      <div class="claim-box">
+        <span class="tag">THE ONE-SENTENCE CLAIM</span>
+        A fixed-size Hebbian synaptic memory can match KV-cache retrieval accuracy at small context sizes, but degrades through interference as more facts are written — while a KV cache stays accurate but grows without bound.
+      </div>
+      <p class="lede">Transformers keep every past token's key and value around so they can look anything up later. Brain-inspired architectures like Pathway's Dragon Hatchling instead compress the past into a fixed-size synaptic state. This page lets you run both side by side, with real numbers, and try to break the claim above yourself.</p>
+      <div class="btn-row">
+        <a href="#playground" class="btn btn-primary">Run the experiment</a>
+        <a href="#demo" class="btn btn-secondary">60-second judge demo</a>
+      </div>
+    </div>
+    <div class="hero-viz">
+      <div class="viz-row">
+        <div class="viz-label"><span>KV Cache — grows with every fact</span><b id="hero-slots-count">1 facts stored</b></div>
+        <div class="cache-slots" id="hero-slots"></div>
+      </div>
+      <div class="viz-row">
+        <div class="viz-label"><span>Synaptic Memory — one fixed matrix, always</span><b>never grows</b></div>
+        <div class="matrix-fixed"></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ============ PLAYGROUND ============ -->
+<section id="playground">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="section-kicker">01 · MEMORY PLAYGROUND</div>
+      <h2>Watch the trade-off happen</h2>
+      <p>Change the memory dimension, the decay rate λ, and the learning rate η. Each run writes the same controlled set of facts into both a real KV cache and a real synaptic memory, then queries them — nothing here is precomputed unless the backend is unreachable, in which case the panel says so explicitly.</p>
+    </div>
+
+    <div class="panel">
+      <div class="grid-2">
+        <div>
+          <div class="control">
+            <label>Memory dimension <span class="val" id="pg-dim-val">64</span></label>
+            <input type="range" id="pg-dim" min="16" max="256" step="16" value="64" />
+          </div>
+          <div class="control">
+            <label>Decay λ (retention) <span class="val" id="pg-decay-val">0.99</span></label>
+            <input type="range" id="pg-decay" min="0.90" max="1.0" step="0.001" value="0.99" />
+          </div>
+          <div class="control">
+            <label>Learning rate η <span class="val" id="pg-lr-val">1.0</span></label>
+            <input type="range" id="pg-lr" min="0.1" max="3.0" step="0.1" value="1.0" />
+          </div>
+          <div class="control">
+            <label>Target facts tracked <span class="val" id="pg-target-val">20</span></label>
+            <input type="range" id="pg-target" min="5" max="50" step="5" value="20" />
+          </div>
+          <button class="btn btn-primary" id="pg-run" style="width:100%; justify-content:center;">Run benchmark</button>
+          <p class="note" id="pg-status">Idle.</p>
+
+          <div class="metric-row" style="margin-top:18px;">
+            <div class="metric-card kv"><div class="metric-label">KV accuracy (10k facts)</div><div class="metric-value" id="mc-kv-acc">—</div></div>
+            <div class="metric-card syn"><div class="metric-label">Synaptic accuracy (10k facts)</div><div class="metric-value" id="mc-syn-acc">—</div></div>
+            <div class="metric-card kv"><div class="metric-label">KV memory (10k facts)</div><div class="metric-value" id="mc-kv-mem">—</div></div>
+            <div class="metric-card syn"><div class="metric-label">Synaptic memory (10k facts)</div><div class="metric-value" id="mc-syn-mem">—</div></div>
+          </div>
+        </div>
+
+        <div>
+          <div class="legend">
+            <span><span class="dot kv"></span>KV Cache</span>
+            <span><span class="dot syn"></span>Synaptic Memory</span>
+          </div>
+          <p class="note" style="margin-bottom:4px;">Retrieval accuracy vs. sequence length</p>
+          <canvas id="chart-accuracy" style="width:100%; height:180px;"></canvas>
+          <p class="note" style="margin:16px 0 4px;">Memory footprint vs. sequence length (KB)</p>
+          <canvas id="chart-memory" style="width:100%; height:180px;"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ RECALL LAB ============ -->
+<section id="recall">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="section-kicker">02 · MEMORY RECALL LAB</div>
+      <h2>Bury a fact, then ask for it back</h2>
+      <p>Type a few facts, add distractors to simulate a long conversation, then ask a question. Facts are converted to vectors with a disclosed deterministic hash-based toy embedding (not a real language model) — good enough to test retrieval mechanics, not semantic understanding.</p>
+    </div>
+    <div class="panel">
+      <div class="grid-2">
+        <div>
+          <div class="control">
+            <label>Facts (one per line)</label>
+            <textarea id="recall-facts">Aditya likes basketball.
+Rohan likes cricket.
+Neha studies computer science.</textarea>
+          </div>
+          <div class="control">
+            <label>Query</label>
+            <input type="text" id="recall-query" value="Aditya likes basketball." />
+          </div>
+          <div class="control">
+            <label>Distractor facts injected <span class="val" id="recall-distractors-val">200</span></label>
+            <input type="range" id="recall-distractors" min="0" max="10000" step="100" value="200" />
+          </div>
+          <button class="btn btn-primary" id="recall-run" style="width:100%; justify-content:center;">Test recall</button>
+        </div>
+        <div>
+          <div id="recall-banner" class="result-banner">Enter facts and a query, then run the test.</div>
+          <p class="note" style="margin-top:14px;">Try raising distractors from 200 to 5,000+ and re-running the same query — this is the live version of the interference effect shown in the Playground chart above.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FORGETTING LAB ============ -->
+<section id="forgetting">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="section-kicker">03 · FORGETTING LAB</div>
+      <h2>What decay λ actually controls</h2>
+      <p>λ is the retention factor in <code>W_t = λ·W_{t-1} + η·(v kᵀ)</code>. Higher λ keeps old synaptic strength around longer — but that also means old writes keep contributing to every later retrieval, which is exactly what causes interference. Move the slider; both effects update together.</p>
+    </div>
+    <div class="panel">
+      <div class="grid-2-eq">
+        <div>
+          <div class="control">
+            <label>Decay λ <span class="val" id="fg-decay-val">0.990</span></label>
+            <input type="range" id="fg-decay" min="0.85" max="1.0" step="0.001" value="0.99" />
+          </div>
+          <p class="note" style="margin-bottom:4px;">Single-write retention over time (no new writes)</p>
+          <canvas id="chart-retention" style="width:100%; height:160px;"></canvas>
+        </div>
+        <div>
+          <p class="note" style="margin-bottom:4px;">Synaptic accuracy vs. sequence length at this λ</p>
+          <canvas id="chart-fg-accuracy" style="width:100%; height:160px;"></canvas>
+          <p class="note" style="margin-top:10px;"><b>No hidden limit:</b> at λ ≈ 1.0, nothing decays, so every past write keeps contributing to <code>W</code> at nearly full strength — this typically <i>increases</i> interference at large sequence lengths rather than fixing it, because more facts stay "loud" at once.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ BDH MODULE ============ -->
+<section id="bdh">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="section-kicker">04 · CONNECTING TO DRAGON HATCHLING (BDH)</div>
+      <h2>Where this idea shows up in BDH</h2>
+      <p>This prototype isolates one mechanism from a real, published architecture. It is not a reimplementation of BDH and is not claimed to behave identically — the comparison below is deliberately explicit about what matches and what doesn't.</p>
+    </div>
+
+    <div class="panel">
+      <div class="grid-2-eq">
+        <div class="eq-card">
+          <span class="badge syn">THIS PROTOTYPE</span>
+          <h3>Hebbian fast-weight update</h3>
+          <span class="equation">W_t = λ · W_(t-1) + η · (v kᵀ)</span>
+          <ul>
+            <li><b>W</b> — fixed (dim × dim) synaptic matrix, one per memory</li>
+            <li><b>λ</b> — global decay applied uniformly every write</li>
+            <li><b>η</b> — fixed learning rate</li>
+            <li>Retrieval: <code>W @ query</code>, no sparsity, no non-negativity constraint</li>
+          </ul>
+        </div>
+        <div class="eq-card">
+          <span class="badge kv">DRAGON HATCHLING (BDH)</span>
+          <h3>Synaptic memory via neuron-synapse formulation</h3>
+          <ul>
+            <li>Attention is reformulated as <b>synaptic memory that updates as the model reads</b>, via Hebbian-style writes between neuron-like units, not a single dense matrix update per step.</li>
+            <li>Activations are <b>sparse and non-negative</b> — roughly 5% of neurons active at a time in reported runs — unlike this prototype's dense real-valued matrix.</li>
+            <li>Connectivity is <b>scale-free / heavy-tailed</b>: a few units act as highly-connected hubs, rather than the uniform dense connectivity of a plain outer-product update.</li>
+            <li>BDH-CQ extends this so the model adapts from demonstrations <b>without a written chain of thought and without updating weights at inference</b> — adaptation lives entirely in this recurrent synaptic state.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px;">
+        <h3 style="margin-bottom:10px; font-size:1rem;">What this prototype demonstrates about BDH's design pressure</h3>
+        <p style="color:var(--ink-dim); font-size:0.92rem;">
+          The KV-cache vs. synaptic-memory trade-off shown in the Playground is the same trade-off BDH's architecture is built to manage: unbounded, exact recall (Transformer KV cache) vs. bounded, plastic state that can generalize to arbitrary sequence length but is vulnerable to interference. BDH's sparsity and monosemantic-synapse design are, per its published account, specifically aimed at reducing that interference compared to a naive dense Hebbian update like the one used here — which is precisely why this prototype's accuracy degrades faster than BDH's reported long-context results. That gap is the limitation this project is most honest about: we did not reproduce BDH's sparsity constraints, so this prototype's degradation curve should be read as an upper bound on the problem, not a measurement of BDH itself.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ JUDGE DEMO ============ -->
+<section id="demo">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="section-kicker">05 · 60-SECOND JUDGE DEMO</div>
+      <h2>One click, the whole claim, reproducible</h2>
+      <p>Runs a short benchmark sweep live against the backend and prints the exact claim it's testing next to the numbers that support or challenge it.</p>
+    </div>
+    <div class="panel">
+      <button class="btn btn-primary" id="demo-run">Run judge demo</button>
+      <div id="demo-output" style="margin-top:18px;"></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <h3 style="color:var(--ink); font-size:1.1rem; margin-bottom:14px;">Limitations &amp; scientifically safe claims</h3>
+    <ul class="limits-list">
+      <li>This is a simplified Hebbian/fast-weight prototype <b>inspired by</b> synaptic-plasticity ideas used in BDH. It is <b>not</b> a reimplementation of BDH and should not be treated as one.</li>
+      <li>The Recall Lab's free-text embedding is a deterministic hash-based toy embedding with no semantic understanding — it distinguishes strings, it does not understand language.</li>
+      <li>"Synaptic memory is O(1) in space" refers specifically to the memory matrix size with respect to sequence length, for a fixed memory dimension — not to compute cost or to every aspect of the system.</li>
+      <li>Degradation curves are measured on a controlled, uncorrelated associative-recall benchmark (random unit vectors). Real-world text has structure a language model can exploit; these numbers should not be read as a prediction of real-world model behavior.</li>
+      <li>All charts either call the live backend at run time or explicitly say "precomputed" when the backend is unreachable — see <code>experiments/benchmark.py</code> for the exact script used to generate any precomputed numbers.</li>
+    </ul>
+    <p style="margin-top:20px;">Source: see README for architecture, reproduction steps, primary papers, and full BDH/BDH-CQ citations.</p>
+  </div>
+</footer>
+
+<script src="assets/app.js"></script>
+</body>
+</html>
